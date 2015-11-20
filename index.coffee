@@ -1,7 +1,6 @@
 #
 # Uses [passport.js](http://passportjs.org/) to setup authentication with
-# various providers like direct login with Artsy, or oauth signin with Facebook
-# or Twitter.
+# various providers like direct login with Artsy, or oauth signin with Facebook, Twitter or LinkedIn.
 #
 
 _ = require 'underscore'
@@ -10,6 +9,7 @@ express = require 'express'
 passport = require 'passport'
 FacebookStrategy = require('passport-facebook').Strategy
 TwitterStrategy = require('passport-twitter').Strategy
+LinkedInStrategy = require('passport-linkedin').Strategy
 LocalStrategy = require('passport-local').Strategy
 qs = require 'querystring'
 crypto = require 'crypto'
@@ -24,10 +24,12 @@ hash = (str) ->
 opts =
   facebookPath: '/users/auth/facebook'
   twitterPath: '/users/auth/twitter'
+  linkedinPath: '/users/auth/linkedin'
   loginPath: '/users/sign_in'
   signupPath: '/users/invitation/accept'
   twitterCallbackPath: '/users/auth/twitter/callback'
   facebookCallbackPath: '/users/auth/facebook/callback'
+  linkedinCallbackPath: '/users/auth/linkedin/callback'
   twitterLastStepPath: '/users/auth/twitter/email'
   logoutPath: '/users/sign_out'
   signupRedirect: '/'
@@ -54,10 +56,13 @@ initApp = ->
     afterLocalAuth
   app.get opts.twitterPath, socialAuth('twitter')
   app.get opts.facebookPath, socialAuth('facebook')
+  app.get opts.linkedinPath, socialAuth('linkedin')
   app.get opts.twitterCallbackPath, socialAuth('twitter'),
     socialSignup('twitter')
   app.get opts.facebookCallbackPath, socialAuth('facebook'),
     socialSignup('facebook')
+  app.get opts.linkedinCallbackPath, socialAuth('linkedin'),
+    socialSignup('linkedin')
   app.get opts.twitterLastStepPath, loginBeforeTwitterLastStep
   app.delete opts.logoutPath, logout
   app.post opts.twitterLastStepPath, submitTwitterLastStep
@@ -84,6 +89,15 @@ initPassport = ->
     callbackURL: "#{opts.APP_URL}#{opts.twitterCallbackPath}"
     passReqToCallback: true
   , twitterCallback
+  passport.use new LinkedInStrategy
+    consumerKey: LINKEDIN_KEY
+    consumerSecret: LINKEDIN_SECRET
+    callbackURL: "#{opts.APP_URL}#{opts.linkedinCallbackPath}"
+    passReqToCallback: true
+    # ^ necessary?
+    state: true
+    profileFields: ['id', 'first-name', 'last-name', 'email-address', 'headline', 'location', 'industry', 'summary', 'specialties', 'positions', 'public-profile-url']
+  , linkedinCallback
 
 #
 # Passport callbacks
@@ -144,6 +158,30 @@ twitterCallback = (req, token, tokenSecret, profile, done) ->
       oauth_token_secret: tokenSecret
       provider: 'twitter'
       email: opts.twitterSignupTempEmail(token, tokenSecret, profile)
+      name: profile?.displayName
+    )
+
+linkedinCallback = (req, token, tokenSecret, profile, done) ->
+  if req.user
+    request.post(
+      "#{opts.ARTSY_URL}/api/v1/me/authentications/linkedin"
+    ).query(
+      oauth_token: token
+      oauth_token_secret: tokenSecret
+      access_token: req.user.get 'accessToken'
+    ).end (res) ->
+      err = res.body.error or res.body.message + ': LinkedIn' if res.error
+      done err, req.user
+  else
+    request.get("#{opts.ARTSY_URL}/oauth2/access_token").query(
+      client_id: opts.ARTSY_ID
+      client_secret: opts.ARTSY_SECRET
+      grant_type: 'oauth_token'
+      oauth_token: token
+      oauth_provider: 'linkedin'
+    ).end accessTokenCallback(req, done,
+      oauth_token: token
+      provider: 'linkedin'
       name: profile?.displayName
     )
 
@@ -225,7 +263,7 @@ socialAuth = (provider) ->
   (req, res, next) ->
     return next("#{provider} denied") if req.query.denied
     # CSRF protection for Facebook account linking
-    if req.path is opts.facebookPath and req.user and
+    if req.path is (opts.facebookPath || opts.linkedinPath) and req.user and
        req.query.state isnt hash(req.user.get 'accessToken')
       err = new Error("Must pass a `state` query param equal to a sha1 hash" +
         "of the user's access token to link their account.")
@@ -239,7 +277,10 @@ socialAuth = (provider) ->
       err = new Error("Must pass a valid `state` param.")
       return next err
     passport.authenticate(provider,
-      scope: 'email'
+      if provider is 'linkedin'
+        scope: ['r_basicprofile', 'r_emailaddress'] 
+      else
+        scope: 'email'
       callbackURL: "#{opts.APP_URL}#{opts.twitterCallbackPath}?state=#{req.session.twitterState}" if provider is 'twitter'
     )(req, res, next)
 
@@ -259,14 +300,19 @@ socialSignup = (provider) ->
     querystring = qs.stringify(
       _.omit(req.query, 'code', 'oauth_token', 'oauth_verifier')
     )
-    url = (if provider is 'twitter' then \
-      opts.twitterLastStepPath else opts.facebookPath) + '?' + querystring
+    path = switch
+      when provider is 'twitter' then opts.twitterLastStepPath
+      when provider is 'facebook' then opts.facebookPath
+      when provider is 'linkedin' then opts.linkedinPath
+      # (if provider is 'twitter' then \
+      # opts.twitterLastStepPath else opts.facebookPath) + '?' + querystring
+    url = path + '?' + querystring
     res.redirect url
 
 signup = (req, res, next) ->
   request.post(opts.ARTSY_URL + '/api/v1/user').send(
     name: req.body.name
-    email: req.body.email
+    email: req.body.email # more params here for linkedin?
     password: req.body.password
     xapp_token: opts.XAPP_TOKEN
   ).end onCreateUser(next)
