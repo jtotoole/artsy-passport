@@ -94,7 +94,6 @@ initPassport = ->
     consumerSecret: LINKEDIN_SECRET
     callbackURL: "#{opts.APP_URL}#{opts.linkedinCallbackPath}"
     passReqToCallback: true
-    # ^ necessary?
     state: true
     profileFields: ['id', 'first-name', 'last-name', 'email-address', 'headline', 'location', 'industry', 'summary', 'specialties', 'positions', 'public-profile-url']
   , linkedinCallback
@@ -178,9 +177,11 @@ linkedinCallback = (req, token, tokenSecret, profile, done) ->
       client_secret: opts.ARTSY_SECRET
       grant_type: 'oauth_token'
       oauth_token: token
+      oauth_token_secret: tokenSecret
       oauth_provider: 'linkedin'
     ).end accessTokenCallback(req, done,
       oauth_token: token
+      oauth_token_secret: tokenSecret
       provider: 'linkedin'
       name: profile?.displayName
     )
@@ -262,7 +263,7 @@ afterLocalAuth = (req, res ,next) ->
 socialAuth = (provider) ->
   (req, res, next) ->
     return next("#{provider} denied") if req.query.denied
-    # CSRF protection for Facebook account linking
+    # CSRF protection for Facebook/LinkedIn account linking
     if req.path is (opts.facebookPath || opts.linkedinPath) and req.user and
        req.query.state isnt hash(req.user.get 'accessToken')
       err = new Error("Must pass a `state` query param equal to a sha1 hash" +
@@ -312,7 +313,7 @@ socialSignup = (provider) ->
 signup = (req, res, next) ->
   request.post(opts.ARTSY_URL + '/api/v1/user').send(
     name: req.body.name
-    email: req.body.email # more params here for linkedin?
+    email: req.body.email
     password: req.body.password
     xapp_token: opts.XAPP_TOKEN
   ).end onCreateUser(next)
